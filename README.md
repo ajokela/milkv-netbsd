@@ -45,23 +45,27 @@ diskutil eject /dev/diskN
 2. **Serial console strongly recommended**: 3.3 V USB-UART on the 40-pin
    header — pin 6 GND, pin 8 board TX, pin 10 board RX, 115200 8N1. There is
    no HDMI under NetBSD (no JH7110 display driver).
-3. Power on. U-Boot runs `/boot.scr` from the EFI partition, which selects
-   NetBSD's `jh7110-milkv-mars.dtb` and boots `bootriscv64.efi`.
+3. Power on. U-Boot (our build, with the Mars `fdtfile` compiled in)
+   EFI-boots `bootriscv64.efi` with NetBSD's own `jh7110-milkv-mars.dtb`.
 
-First boot: the root filesystem grows to fill the card, then the image's
-stock config attempts a self-reboot — **which hangs** (see Known issues).
-Power-cycle once. After that, log in as `root` (no password) on serial, or
-via SSH if you baked in a key (below). `dhcpcd` configures Ethernet.
+First boot: the root filesystem grows to fill the card, then the image
+intentionally reboots without syncing (`reboot -n`) — **which hangs on this
+board** (PMIC, see Known issues). This is expected and safe: power-cycle
+once and every later boot is normal. Do NOT "fix" the postcmd — the no-sync
+reboot protects the fresh resize from stale-superblock writeback.
 
-Recommended first-login tweaks:
+Log in as `root` (no password) on serial, or via SSH if you baked in a key
+(below). `dhcpcd` configures Ethernet.
+
+Recommended first-login tweak — pin a MAC (any locally-administered one):
 
 ```sh
-echo "link f2:00:bc:8e:6b:ba active" > /etc/ifconfig.eqos0   # pin a MAC (any locally-administered one)
-sed -i 's|resize_root_postcmd=.*|resize_root_postcmd=""|' /etc/rc.conf
+echo "link f2:00:bc:8e:6b:ba active" > /etc/ifconfig.eqos0
 ```
 
-The MAC pin matters because the Mars EEPROM is blank, so NetBSD generates a
-random MAC each boot — new DHCP lease every time until you pin one.
+The Mars EEPROM is blank, so NetBSD otherwise generates a random MAC each
+boot — a new DHCP lease every time. (Images made with `customize-image.sh`
+already include a persistent-MAC generator.)
 
 ### SSH access
 
@@ -77,7 +81,7 @@ only; sshd's default forbids root passwords).
 |---|----------|-----------|-------|
 | 1 | mainline U-Boot SPL (2025.01) | `2E54B353-…6985` | loaded by BootROM |
 | 2 | OpenSBI + U-Boot FIT (2025.01) | `BC13C2FF-…7172` | loaded by SPL |
-| 3 | boot partition (FAT16) | ESP | `boot.scr`, `EFI/BOOT/bootriscv64.efi`, `/dtb` |
+| 3 | boot partition (FAT16) | ESP | `EFI/BOOT/bootriscv64.efi`, `/dtb` |
 | 4 | NetBSD root | NetBSD FFS | kernel at `/netbsd` |
 
 **Why mainline U-Boot (Debian's `u-boot-starfive` 2025.01):** the MilkV vendor
@@ -86,14 +90,21 @@ flows are its own Linux and uEnv/extlinux, and on our test board it ignored
 even its own `uEnv.txt` mechanism. Mainline v2025.01 is the sweet spot:
 mature JH7110 support, SD-boot SPL still present (removed in v2025.10).
 
-**Why `boot.scr`:** the Mars EEPROM is blank, so U-Boot's VisionFive 2 board
-code never composes `${fdtfile}` and silently falls back to its built-in
-VF2 device tree — under which NetBSD misconfigures the Motorcomm PHY
-(`unknown drive strength`) and drops ~80% of packets, and probes a phantom
-second GMAC. `boot.scr` sets `fdtfile` to NetBSD's own Mars DTB explicitly.
-The ESP is rebuilt as plain FAT16 (NetBSD `makefs`'s FAT32 layout is exotic
-enough to distrust with vendor-era FAT drivers), and the Mars DTB is also
-aliased over the VF2 filenames as belt-and-suspenders.
+**Why a custom U-Boot build (`firmware/`, reproduced by `build-uboot.sh`):**
+the Mars EEPROM is blank, so U-Boot's VisionFive 2 board code never composes
+`${fdtfile}`; the stock defconfig also leaves `CONFIG_DEFAULT_FDT_FILE`
+empty, and U-Boot deletes env variables with empty defaults. Result: U-Boot
+silently falls back to its built-in VF2 device tree — under which NetBSD
+misconfigures the Motorcomm PHY (`unknown drive strength`), drops ~80% of
+packets, and probes a phantom second GMAC. Our build adds exactly one line:
+`CONFIG_DEFAULT_FDT_FILE="starfive/jh7110-milkv-mars.dtb"`. The ESP is
+rebuilt as plain FAT16 (NetBSD `makefs`'s FAT32 layout is exotic enough to
+distrust with vendor-era FAT drivers), and the Mars DTB is aliased over the
+VF2 filenames as belt-and-suspenders.
+
+**Distribution images:** `./customize-image.sh <image>` boots the image in
+QEMU and bakes in `root`/`netbsd` credentials, `PermitRootLogin yes`, a
+warning motd, and a persistent-MAC generator — see the script header.
 
 ## Known issues
 
@@ -107,9 +118,12 @@ aliased over the VF2 filenames as belt-and-suspenders.
   via `uvm_pageout` → `pmap_clear_attribute`. Full backtrace in
   `docs/netbsd-pmap-panic.md`. Appears load/timing dependent; worth
   reporting to port-riscv@ and retrying newer -current dailies.
-- **`gpt resizedisk` failure at first boot** on some cards
-  (`Can't delete, next map is in use`) — if the root doesn't auto-grow, run
-  `gpt resizedisk ld1 && gpt resize -i 4 ld1` manually and power-cycle.
+- **If the root doesn't auto-grow** (`gpt` errors at first boot): from the
+  boot-failure recovery shell (root mounted read-only), run
+  `gpt resizedisk ld1`, `gpt resize -i 4 ld1`, `resize_ffs -y /dev/rdk3`,
+  `fsck_ffs -f -y /dev/rdk3`, then exit with `reboot -n` (never a syncing
+  shutdown — the kernel's stale in-core superblock would clobber the resize)
+  and power-cycle.
 - JH7110 support exists only in **NetBSD-current**; every build of this image
   tracks a moving target. `.buildinfo.txt` pins what you got.
 
