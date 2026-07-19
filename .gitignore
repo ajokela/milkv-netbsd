@@ -1,0 +1,7 @@
+downloads/
+*.img
+*.img.xz
+*.img.verify
+*.buildinfo.txt
+*.sha512
+.DS_Store
