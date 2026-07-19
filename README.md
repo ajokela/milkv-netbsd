@@ -116,6 +116,6 @@ aliased over the VF2 filenames as belt-and-suspenders.
 ## History
 
 The full debugging story (vendor firmware archaeology, QEMU time machine,
-SD-card flight recorder, serial-console endgame) is written up on
-[tinycomputers.io](https://tinycomputers.io/). Design notes:
+SD-card flight recorder, serial-console endgame) is written up in
+[Four Partitions and a Borrowed Bootloader](https://tinycomputers.io/posts/four-partitions-and-a-borrowed-bootloader-netbsd-on-the-milk-v-mars.html). Design notes:
 `docs/superpowers/specs/2026-07-18-mars-netbsd-image-design.md`.
