@@ -1,4 +1,4 @@
-Subject: Repeatable UVM/pmap panics on riscv64 (JH7110/Milk-V Mars) under FFS write load
+Subject: Repeatable UVM/pmap memory-corruption panics on riscv64 (JH7110/Milk-V Mars) under memory pressure
 
 To: port-riscv@NetBSD.org
 
