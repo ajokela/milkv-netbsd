@@ -6,6 +6,11 @@ its own bootloader — nothing on the board's SPI flash is used or modified.
 
 Status: **boots and runs with working gigabit Ethernet.** Known issues below.
 
+**Prebuilt image:** [netbsd-mars-20260719.img.xz](https://cdn.tinycomputers.io/milkv-mars/netbsd-mars-20260719.img.xz)
+(234 MB, [SHA512](https://cdn.tinycomputers.io/milkv-mars/netbsd-mars-20260719.img.xz.sha512)) —
+default login `root`/`netbsd` (change it!), CPU ramped to 750 MHz by the
+bundled firmware, unique SSH host keys generated on first boot.
+
 ## Build
 
 ```sh
