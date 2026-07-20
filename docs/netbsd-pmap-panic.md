@@ -79,3 +79,35 @@ Two distinct assertions (pmap_segtab active-pmap check; UBC list-integrity
 check) both in the UVM layer under memory/IO pressure suggest a common
 underlying riscv MD issue (TLB/pmap coherency?) rather than two separate
 bugs. Both boots used the jh7110-milkv-mars.dtb from the same kernel build.
+
+## Third occurrence (2026-07-20) — and a reliable reproducer
+
+Extracting the 228 MB Rust bootstrap tarball (`tar xf`, ~1.5 GB of files)
+onto the SD root panicked the kernel at the same place as the pkgsrc
+extraction:
+
+```
+[ 48614.9107664] panic: LIST_* back 0xffffffc0057d7360 /usr/src/sys/uvm/uvm_bio.c:539
+  vpanic <- panic <- ubc_alloc.constprop.0 <- ubc_uiomove <- ffs_write
+  <- VOP_WRITE <- vn_write <- dofilewrite <- syscall
+```
+
+**Reproducer:** extract any large multi-hundred-MB tarball containing many
+files onto an FFS filesystem on this board. Two for two so far (pkgsrc
+tarball, Rust bootstrap tarball); uptime and free space are irrelevant (this
+run had 25 GB free and the machine had been up ~13 hours).
+
+The UBC (buffer cache) list-integrity assertion at `uvm_bio.c:538/539` fires
+in `ubc_alloc()` under sustained `ffs_write()` pressure. The earlier
+`pmap_segtab.c:948` panic in the pagedaemon is likely the same underlying
+problem seen from a different angle: both are UVM structures being corrupted
+or raced under memory pressure on riscv64.
+
+### Practical consequence
+
+Bulk writes to FFS on this port are unreliable. The workaround adopted here:
+keep large read-mostly trees (pkgsrc, the Rust toolchain) on NFS and do
+build-time writes in a tmpfs, so the FFS write path is never driven hard.
+Note that NFS *writes* are also impractical on this board for a different
+reason — see the `eqos` TX bug in `benchmarks-and-eqos-tx.md` (2.45 Mbit/s
+outbound) — so tmpfs is the only fast writable scratch space available.
