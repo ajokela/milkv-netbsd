@@ -1,4 +1,4 @@
-# NetBSD/riscv64 pmap panic on StarFive JH7110 (MilkV Mars)
+# NetBSD/riscv64 UVM panics on StarFive JH7110 (MilkV Mars)
 
 Draft material for a port-riscv@ / send-pr report. Captured over serial
 console on 2026-07-19.
@@ -55,3 +55,27 @@ console on 2026-07-19.
 
 - Re-test with a newer -current daily.
 - If reproducible, file send-pr with this trace; CC port-riscv@.
+
+## Second occurrence (2026-07-19, different assertion, same subsystem)
+
+Uptime ~54 min, during extraction of the pkgsrc tarball (heavy small-file
+write load) onto SD. Root filesystem healthy and only ~7% full this time.
+
+```
+[ 3240.6254594] panic: LIST_* back 0xffffffc0057d87a0 /usr/src/sys/uvm/uvm_bio.c:538
+[ 3240.6454595] trace fp ffffffc2c3402a20
+[ 3240.6454595] fp ffffffc2c3402a60 vpanic() at netbsd:vpanic+0x140
+[ 3240.6554638] fp ffffffc2c3402a80 panic() at netbsd:panic+0x24
+[ 3240.6654601] fp ffffffc2c3402b40 ubc_alloc.constprop.0() at netbsd:ubc_alloc.constprop.0+0x322
+[ 3240.6854605] fp ffffffc2c3402c40 ubc_uiomove() at netbsd:ubc_uiomove+0x7a
+[ 3240.6954608] fp ffffffc2c3402d00 ffs_write() at netbsd:ffs_write+0x210
+[ 3240.7054641] fp ffffffc2c3402d60 VOP_WRITE() at netbsd:VOP_WRITE+0x5a
+[ 3240.7154632] fp ffffffc2c3402db0 vn_write() at netbsd:vn_write+0xa0
+[ 3240.7254617] fp ffffffc2c3402e30 dofilewrite() at netbsd:dofilewrite+0x5e
+[ 3240.7354620] fp ffffffc2c3402ee0 syscall() at netbsd:syscall+0xe8
+```
+
+Two distinct assertions (pmap_segtab active-pmap check; UBC list-integrity
+check) both in the UVM layer under memory/IO pressure suggest a common
+underlying riscv MD issue (TLB/pmap coherency?) rather than two separate
+bugs. Both boots used the jh7110-milkv-mars.dtb from the same kernel build.
