@@ -101,6 +101,27 @@ Verbatim from serial console:
 A second instance reported uvm_bio.c:538 (LIST_REMOVE(umap, hash)) with an
 otherwise identical backtrace, i.e. the same corrupted umap being unlinked.
 
+Confirmed 2026-07-20 with ddb.onpanic=1 (interactive ddb on the serial
+console), triggered by a `cargo build` (many concurrent ffs_write). Panic and
+auto-backtrace verbatim:
+
+    panic: LIST_* back 0xffffffc0057b9b40 /usr/src/sys/uvm/uvm_bio.c:538
+    cpu2: Begin traceback...
+    vpanic() at netbsd:vpanic+0x140
+    panic() at netbsd:panic+0x24
+    ubc_alloc.constprop.0() at netbsd:ubc_alloc.constprop.0+0x322
+    ubc_uiomove() at netbsd:ubc_uiomove+0x7a
+    ffs_write() at netbsd:ffs_write+0x210
+    VOP_WRITE() at netbsd:VOP_WRITE+0x5a
+    vn_write() at netbsd:vn_write+0xa0
+    dofilewrite() at netbsd:dofilewrite+0x5e
+    syscall() at netbsd:syscall+0xe8
+
+I can reproduce this in ddb on demand and gather more state (ps, memory dump
+of the corrupted umap, etc.) on request. I also have a GENERIC64_DEBUG kernel
+(DEBUG + LOCKDEBUG + PMAP_DEBUG) cross-built and ready to boot for a
+higher-resolution capture.
+
 ### Reproducer
 
     # on the target, root FFS on SD:
