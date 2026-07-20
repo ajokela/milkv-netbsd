@@ -39,6 +39,12 @@ cd u-boot-UBOOT_VER
 make starfive_visionfive2_defconfig >/dev/null
 grep -q 'CONFIG_DEFAULT_FDT_FILE="starfive/jh7110-milkv-mars.dtb"' .config || \
     echo 'CONFIG_DEFAULT_FDT_FILE="starfive/jh7110-milkv-mars.dtb"' >> .config
+# Raise PLL0 500MHz -> 750MHz before boot (park CPU on osc during retune).
+# Mainline SPL leaves the JH7110 at its 500MHz reset clock; NetBSD has no
+# cpufreq driver to raise it. 750MHz is safe at the default CPU voltage;
+# 1.5GHz needs a PMIC voltage bump (future work).
+grep -q 'CONFIG_BOOTCOMMAND=' .config && sed -i 's|^CONFIG_BOOTCOMMAND=.*|CONFIG_BOOTCOMMAND="mw.l 13020000 0; mw.l 1303001c 7d; mw.l 13020000 01000000; bootflow scan"|' .config || \
+    echo 'CONFIG_BOOTCOMMAND="mw.l 13020000 0; mw.l 1303001c 7d; mw.l 13020000 01000000; bootflow scan"' >> .config
 make olddefconfig >/dev/null
 export OPENSBI=$HOME/mars-uboot/opensbi-OPENSBI_VER/build/platform/generic/firmware/fw_dynamic.bin
 make CROSS_COMPILE=riscv64-linux-gnu- -j"$(nproc)" >/dev/null
