@@ -111,3 +111,21 @@ build-time writes in a tmpfs, so the FFS write path is never driven hard.
 Note that NFS *writes* are also impractical on this board for a different
 reason — see the `eqos` TX bug in `benchmarks-and-eqos-tx.md` (2.45 Mbit/s
 outbound) — so tmpfs is the only fast writable scratch space available.
+
+## Fourth occurrence (2026-07-20) -- memory-corruption load fault, NO FFS writes
+
+During a Rust compile (ballistics-engine v0.27.1) built entirely in tmpfs --
+source, CARGO_HOME, and target dir all in RAM, so ffs_write was not on the
+hot path -- the kernel took a fatal load page fault on a corrupted pointer:
+
+    Trapframe cause=13 (load page fault) va=0xffffff8080808078
+      a4=0x8080808080808078  s2=0x8080808080808078  a0=0x808080bdbd26e0c8
+    panic: cpu_trap: fatal kernel trap  (recursive; faulted mid-traceback)
+
+The 0x80-byte smear across the faulting VA and several registers is a
+corrupted structure field. This is important: it happened with the FFS write
+path idle, so the earlier "keep bulk writes off FFS" workaround does NOT make
+the machine safe -- the underlying bug is memory corruption under pressure,
+and a large enough build (this one was compiling `ring`, heavy on RAM) can
+trigger it even in tmpfs. Smaller builds (ballistics-engine v0.4.3) completed
+in tmpfs without incident, so it is pressure/duration dependent.

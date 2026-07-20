@@ -4,9 +4,9 @@ To: port-riscv@NetBSD.org
 
 Hello,
 
-I have two repeatable panics on NetBSD/riscv64 running on a Milk-V Mars
-(StarFive JH7110, 4x SiFive U74, 8 GB RAM). Both are in the UVM layer and
-both appear under sustained filesystem write pressure. The kernel is an
+I have several repeatable panics (three distinct manifestations) on NetBSD/riscv64 running on a Milk-V Mars
+(StarFive JH7110, 4x SiFive U74, 8 GB RAM). All are in the UVM/pmap layer and appear under memory pressure
+(one of them with no filesystem writes at all -- see Panic C). The kernel is an
 unmodified official daily build, and GENERIC64 ships with `options
 DIAGNOSTIC`, so these consistency checks are active on every -current
 riscv64 kernel, not a custom debug build.
@@ -91,12 +91,34 @@ otherwise identical backtrace, i.e. the same corrupted umap being unlinked.
 Two-for-two on the pkgsrc tarball. The common factor is a high, sustained
 rate of ffs_write() with UBC window churn.
 
-## Relationship between the two
+## Panic C -- fatal load page fault on a 0x80-smeared pointer (memory corruption)
 
-Both are UVM-layer consistency checks failing under memory/write pressure on
-SMP riscv64. They may share a root cause (structure corruption or a race in
-the UBC or pmap paths) or be distinct; I report both and leave that judgment
-to those who know the code. The UBC one is by far the easier to reproduce.
+Occurred during a heavy Rust compile whose intermediate files were all in
+tmpfs (i.e. NO bulk FFS writes -- this rules out ffs_write as the sole
+trigger and points at memory pressure generally). cause=13 load page fault
+in the kernel, recursing into a second fatal trap during traceback:
+
+    panic: cpu_trap: fatal kernel trap
+    Trapframe @ 0xffffffc2c3599e40 (cause=13 (load page fault), status=0x120, pc=0xffffffc000013900, va=0xffffff8080808078):
+      ra =0xffffffc000013d48  ...
+      a0 =0x808080bdbd26e0c8  a4 =0x8080808080808078  s2 =0x8080808080808078
+    Skipping crash dump on recursive panic
+    panic: cpu_trap: fatal kernel trap
+    Faulted in mid-traceback; aborting...
+
+The faulting VA and several registers (a4, s2, and the low bytes of a0) are
+smeared with a repeating 0x80 byte pattern -- a corrupted pointer/structure
+field. The kernel dereferenced it and took a load fault.
+
+## Relationship between the three
+
+All three fail under memory pressure on SMP riscv64, and Panic C's 0x80-byte
+pointer smear is direct evidence of kernel memory corruption. Taken together
+-- a pmap pointer that is wrong (A), a UBC list back-pointer that is wrong
+(B), and a structure field smeared with 0x80 (C) -- these look like three
+faces of a single memory-corruption root cause rather than three unrelated
+bugs, though I leave that judgment to those who know the code. Panic B (the
+tarball extraction) is by far the easiest to reproduce on demand.
 
 ## What I can provide
 
