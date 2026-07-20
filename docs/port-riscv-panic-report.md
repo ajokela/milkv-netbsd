@@ -1,0 +1,117 @@
+Subject: Repeatable UVM/pmap panics on riscv64 (JH7110/Milk-V Mars) under FFS write load
+
+To: port-riscv@NetBSD.org
+
+Hello,
+
+I have two repeatable panics on NetBSD/riscv64 running on a Milk-V Mars
+(StarFive JH7110, 4x SiFive U74, 8 GB RAM). Both are in the UVM layer and
+both appear under sustained filesystem write pressure. The kernel is an
+unmodified official daily build, and GENERIC64 ships with `options
+DIAGNOSTIC`, so these consistency checks are active on every -current
+riscv64 kernel, not a custom debug build.
+
+I would appreciate guidance on whether these are known, and I am happy to
+run a ddb session, test patches, or gather more data on request.
+
+## Environment
+
+- Kernel: NetBSD 11.99.7 (GENERIC64) #0: Sat Jul 18 15:41:53 UTC 2026
+    mkrepro@mkrepro.NetBSD.org:/usr/src/sys/arch/riscv/compile/GENERIC64
+  (official daily gzimg build, unmodified; kernel not rebuilt by me)
+- Board: Milk-V Mars, StarFive JH7110, 4x SiFive U74 @ 750 MHz, 8 GB LPDDR4
+- Bootloader: mainline U-Boot 2025.01 -> OpenSBI -> bootriscv64.efi, with the
+  in-tree jh7110-milkv-mars.dtb passed to the kernel
+- Root: FFS on microSD (ld1/dwcmmc). SMP, all 4 harts running.
+
+## Panic A -- pmap_segtab_activate assertion, from the pagedaemon
+
+Occurs under memory pressure. Assertion is the KASSERTMSG in
+pmap_segtab_activate() (sys/uvm/pmap/pmap_segtab.c:948):
+
+    KASSERTMSG(pm == l->l_proc->p_vmspace->vm_map.pmap, "pm %p vs %p", ...)
+
+Verbatim from serial console:
+
+    panic: kernel diagnostic assertion "pm == l->l_proc->p_vmspace->vm_map.pmap" failed: file "/usr/src/sys/uvm/pmap/pmap_segtab.c", line 948 pm 0xffffffe050bd92c0 vs 0xffffffc000a2c768
+    vpanic() at netbsd:vpanic+0x140
+    kern_assert() at netbsd:kern_assert+0x3a
+    pmap_update() at netbsd:pmap_update+0x50
+    pmap_clear_attribute() at netbsd:pmap_clear_attribute+0xd8
+    uvmpdpol_balancequeue() at netbsd:uvmpdpol_balancequeue+0x13a
+    uvm_pageout() at netbsd:uvm_pageout+0x43a
+    exception_kernexit() at netbsd:exception_kernexit+0x5e
+
+Observation (hypothesis, not a conclusion): the call arrives from the
+pagedaemon (uvm_pageout), which operates on foreign pmaps, while the
+assertion requires the pmap being activated to equal curlwp's own vmspace
+pmap. The failing `pm` (0xffffffe0_50bd92c0) lies in the direct-map region
+(pmap_direct_base = 0xffffffe000000000) rather than where a struct pmap
+would normally live, whereas the expected value (0xffffffc0_00a2c768) is in
+the kernel VA range. This may indicate pmap_update()/segtab_activate being
+reached in a context the invariant does not cover, or a corrupted pmap
+pointer.
+
+## Panic B -- UBC hash/list corruption in ubc_alloc(), from ffs_write
+
+This one is **reliably reproducible**: extracting any large (multi-hundred-MB,
+many-file) tarball onto an FFS filesystem panics the machine. Observed at
+least three times (pkgsrc-2026Q2 tarball twice, the Rust bootstrap tarball
+once). Free space and uptime are irrelevant -- one instance had 25 GB free
+after ~13 hours uptime.
+
+The panic is the sys/queue.h back-pointer consistency check firing inside
+LIST_REMOVE() in ubc_alloc()'s rehash path (sys/uvm/uvm_bio.c:538-539):
+
+    LIST_REMOVE(umap, hash);
+    LIST_REMOVE(umap, list);   /* <- line 539 */
+
+Verbatim from serial console:
+
+    panic: LIST_* back 0xffffffc0057d7360 /usr/src/sys/uvm/uvm_bio.c:539
+    vpanic() at netbsd:vpanic+0x140
+    panic() at netbsd:panic+0x24
+    ubc_alloc.constprop.0() at netbsd:ubc_alloc.constprop.0+0x344
+    ubc_uiomove() at netbsd:ubc_uiomove+0x7a
+    ffs_write() at netbsd:ffs_write+0x210
+    VOP_WRITE() at netbsd:VOP_WRITE+0x5a
+    vn_write() at netbsd:vn_write+0xa0
+    dofilewrite() at netbsd:dofilewrite+0x5e
+    syscall() at netbsd:syscall+0xe8
+
+A second instance reported uvm_bio.c:538 (LIST_REMOVE(umap, hash)) with an
+otherwise identical backtrace, i.e. the same corrupted umap being unlinked.
+
+### Reproducer
+
+    # on the target, root FFS on SD:
+    ftp https://cdn.NetBSD.org/pub/pkgsrc/pkgsrc-2026Q2/pkgsrc.tar.gz
+    tar xzf pkgsrc.tar.gz          # panics partway through extraction
+
+Two-for-two on the pkgsrc tarball. The common factor is a high, sustained
+rate of ffs_write() with UBC window churn.
+
+## Relationship between the two
+
+Both are UVM-layer consistency checks failing under memory/write pressure on
+SMP riscv64. They may share a root cause (structure corruption or a race in
+the UBC or pmap paths) or be distinct; I report both and leave that judgment
+to those who know the code. The UBC one is by far the easier to reproduce.
+
+## What I can provide
+
+- A ddb backtrace with `bt`, `ps`, and register state. My rc currently sets
+  ddb.onpanic=0 so the box reboots on panic; I can set ddb.onpanic=1 and
+  reproduce Panic B on demand to capture a full ddb session.
+- Testing of any diagnostic patch or DEBUG/LOCKDEBUG/UVMHIST kernel.
+- I have not yet attempted to reproduce under qemu-system-riscv64; happy to
+  try if it would help establish whether this is MI-riscv or JH7110-specific.
+
+I also have a separate, unrelated issue on this board -- the `eqos` (DWC
+EQOS) transmit path is limited to ~2.45 Mbit/s while receive runs at
+388 Mbit/s -- which I am glad to report separately if useful.
+
+Thanks for the RISC-V port; happy to help chase these down.
+
+-- 
+Alex Jokela
