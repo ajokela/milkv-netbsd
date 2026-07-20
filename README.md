@@ -129,6 +129,15 @@ warning motd, and a persistent-MAC generator — see the script header.
   `fsck_ffs -f -y /dev/rdk3`, then exit with `reboot -n` (never a syncing
   shutdown — the kernel's stale in-core superblock would clobber the resize)
   and power-cycle.
+- **Outbound network throughput is capped at ~2.45 Mbit/s** by an `eqos`
+  transmit-path bug (receive is fine at 388 Mbit/s). Interactive use, DNS,
+  and `pkgin` installs feel normal; bulk uploads do not. Evidence and
+  analysis in `docs/benchmarks-and-eqos-tx.md`.
+- **CPU runs at 750 MHz**, not the JH7110's full 1.5 GHz. Mainline U-Boot
+  leaves the SoC at its 500 MHz reset clock and NetBSD has no cpufreq driver;
+  our firmware raises it to 750 MHz, which is safe at the default core
+  voltage. 1.5 GHz additionally requires a PMIC voltage bump (the vendor
+  firmware does this via its OPP tables) — not yet implemented.
 - JH7110 support exists only in **NetBSD-current**; every build of this image
   tracks a moving target. `.buildinfo.txt` pins what you got.
 
