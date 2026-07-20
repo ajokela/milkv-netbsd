@@ -48,9 +48,28 @@ assertion requires the pmap being activated to equal curlwp's own vmspace
 pmap. The failing `pm` (0xffffffe0_50bd92c0) lies in the direct-map region
 (pmap_direct_base = 0xffffffe000000000) rather than where a struct pmap
 would normally live, whereas the expected value (0xffffffc0_00a2c768) is in
-the kernel VA range. This may indicate pmap_update()/segtab_activate being
-reached in a context the invariant does not cover, or a corrupted pmap
-pointer.
+the kernel VA range. Reading the source, the mechanism appears to be:
+
+  1. pmap_remove_all(pm) sets PMAP_DEFERRED_ACTIVATE on a user pmap and
+     releases its ASID, expecting the *owning* lwp to reactivate on its
+     next pmap_update() (sys/uvm/pmap/pmap.c, pmap_update() lines ~965-972:
+     "If pmap_remove_all was called, we deactivated ourselves ... Now we
+     have to reactivate ourselves").
+  2. Before that process runs again, the pagedaemon touches a page mapped
+     in that pmap (pmap_clear_reference/attribute from uvmpdpol_balancequeue)
+     and calls pmap_update(that_user_pmap).
+  3. pmap_update() sees PMAP_DEFERRED_ACTIVATE and calls
+     pmap_segtab_activate(that_user_pmap, curlwp), where curlwp is the
+     pagedaemon.
+  4. pmap_segtab_activate() asserts the pmap equals curlwp's own vmspace
+     pmap, which is false (the pagedaemon's vmspace is the kernel's).
+
+If that reading is right this is an MI issue in sys/uvm/pmap/ (shared with
+mips and others), where pmap_update()'s "reactivate ourselves" path fires
+for a pmap that is not curlwp's active pmap. It may only manifest on riscv64
+in practice due to timing/ASID usage. This is distinct from the memory
+corruption in Panic C. (Hypothesis from source reading; not yet confirmed in
+ddb.)
 
 ## Panic B -- UBC hash/list corruption in ubc_alloc(), from ffs_write
 
