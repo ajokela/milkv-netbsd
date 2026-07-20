@@ -41,6 +41,8 @@ if [ ! -f "$QEMU_UBOOT" ]; then
        mv usr/lib/u-boot/qemu-riscv64_smode/u-boot.bin . && rm -rf usr; }; rm -f data.tar.xz deb)
 fi
 
+PWHASH=$(openssl passwd -1 "$ROOT_PASSWORD")
+PWHASH_TCL=${PWHASH//\$/\\\$}
 echo "Customizing $IMG (root password: $ROOT_PASSWORD)..."
 
 # Auto-enter single user via NetBSD boot.cfg (efiboot keystrokes are
@@ -62,17 +64,14 @@ send "\r"
 await "# "
 send "/sbin/mount -u -w /\r"
 await "# "
-send "passwd root\r"
-await "assword:"
-send "$ROOT_PASSWORD\r"
-await "assword:"
-send "$ROOT_PASSWORD\r"
+send "usermod -p '$PWHASH_TCL' root && echo PWSET\r"
+await "PWSET"
 await "# "
 send "echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config\r"
 await "# "
-send "echo '!test -f /etc/mars_mac || printf f2:%02x:%02x:%02x:%02x:%02x \$(od -An -N5 -tu1 /dev/urandom) > /etc/mars_mac' > /etc/ifconfig.eqos0\r"
+send "echo '!test -f /etc/mars_mac || printf f2:%02x:%02x:%02x:%02x:%02x \\\$(od -An -N5 -tu1 /dev/urandom) > /etc/mars_mac' > /etc/ifconfig.eqos0\r"
 await "# "
-send "echo '!ifconfig eqos0 link \$(cat /etc/mars_mac) active' >> /etc/ifconfig.eqos0\r"
+send "echo '!ifconfig eqos0 link \\\$(cat /etc/mars_mac) active' >> /etc/ifconfig.eqos0\r"
 await "# "
 send "echo up >> /etc/ifconfig.eqos0\r"
 await "# "
@@ -116,8 +115,10 @@ spawn qemu-system-riscv64 -M virt -m 2G -smp 4 -nographic \
     -drive if=none,id=hd0,file=$IMG.verify,format=raw -device virtio-blk-device,drive=hd0
 proc await {pat} { expect { -re \$pat {} timeout { puts "TIMEOUT waiting: \$pat"; exit 1 } eof { puts "EOF waiting: \$pat"; exit 1 } } }
 await "login:"
+sleep 3
 send "root\r"
-await "assword:"
+await "Password:"
+sleep 2
 send "$ROOT_PASSWORD\r"
 await "# "
 send "grep -c 'PermitRootLogin yes' /etc/ssh/sshd_config && head -3 /etc/motd\r"
