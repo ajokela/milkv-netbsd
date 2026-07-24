@@ -193,17 +193,57 @@ also reproduces through **tmpfs**, not just FFS -- 4 concurrent
     dofilewrite() at netbsd:dofilewrite+0x60
     syscall() at netbsd:syscall+0xea
 
-So the corruption is in the UBC layer itself (ubc_alloc's umap hash/list
-management), independent of the backing filesystem. ddb examine of the
-corrupted umap showed it **largely zeroed**:
+So the panic site is reachable independent of the backing filesystem. A full
+ddb forensic session on this instance localized the corruption precisely.
+With ubc_object.umap = 0xffffffc005ab9000 (0x1000 windows x 0x60 bytes,
+array ends 0xffffffc005b19000 = hash table base, hashmask 0xfff, read out
+of ubc_object in ddb), the panicking umap is umap[478]. Its full struct:
 
-    db> x/x 0xffffffc005ac4340,c
-    ffffffc005ac4340: 3ba20a00 ffffffe1 0 0 0 0 0 0 0 0 0 0
+    uobj             0xffffffe13ba20a00   (tmpfs node, valid-looking)
+    offset/writeoff/writelen  0
+    refcount/flags/advice     0           (normal inactive state)
+    hash.le_next     0
+    hash.le_prev     0xffffffc005b06610   <-- see below
+    inactive.tqe_next 0xffffffc005af58a0  (= umap[2583], sane)
+    inactive.tqe_prev 0xffffffe23ea4d8c0  (= ubc_object.inactive[0], sane)
+    list.le_next     0
+    list.le_prev     0xffffffe13ba20a28   (= &uobj->uo_ubc)
 
-i.e. the umap being LIST_REMOVE'd has a mostly-zeroed body -- consistent with
-a use-after-free / double-unlink of the umap, rather than the wild 0x80 write
-of Panic C. These may be two views of one race in ubc_alloc/ubc_purge under
-concurrent access, or distinct issues.
+The list linkage is provably intact: *0xffffffe13ba20a28 == the umap itself,
+i.e. uobj->uo_ubc.lh_first still points at it. The umap body is a
+self-consistent inactive umap. The ONLY inconsistency is the hash entry.
+
+hash.le_prev does not point at a hash bucket at all -- it resolves to
+umap[3301].hash.le_next (0xffffffc005b065e0 + 0x30), i.e. the umap was
+chained in a bucket behind umap[3301]. And umap[3301] is the finding:
+
+    db> x/x 0xffffffc005b065e0,18
+    -> ALL 96 BYTES ZERO
+
+An all-zero umap is not a legal state at any point after ubc_init(): every
+umap is at minimum linked on an inactive TAILQ (tqe_prev can never be NULL),
+and LIST_REMOVE/TAILQ_REMOVE never clear the removed entry's own fields.
+Something wrote zeros over umap[3301] -- a static, boot-allocated kernel
+array that is never freed -- while its bucket neighbor was chained after it.
+Zeroing its hash.le_next is exactly what makes the neighbor's LIST_REMOVE
+back-pointer check fire. So Panic B is not a UBC locking bug caught in the
+act; it is the UBC DIAGNOSTIC check acting as a tripwire for a foreign
+zeroing write over kernel memory. That unifies cleanly with Panic A (a pmap
+pointer replaced by a wrong value) and Panic C (a pointer smeared with 0x80):
+all three are reads of corrupted kernel memory, with different corruption
+patterns, detected by whichever consistency check trips first.
+
+Also captured at freeze time: a second tar process on another hart was
+inside ubc_alloc (+0x66, early -- consistent with blocking on the
+ubc_object writer lock, which is legal), so the path is under heavy
+concurrent load when the tripwire fires, but the frozen lock/list state
+itself does not show a locking violation.
+
+Next diagnostics planned: (1) reproduce with 3 of 4 CPUs offlined via
+cpuctl(8) to partition SMP-coherency causes from single-CPU wild writes;
+(2) on the next ddb entry, probe the extent of the zeroed region around
+umap[3301] (structure-sized vs page-sized) to distinguish a stray
+structure-sized memset from a wrongly recycled/zero-filled page.
 
 Source note: on the netbsd-11 branch, sys/uvm/uvm_bio.c is byte-identical to
 HEAD, and the pmap deferred-activate/segtab_activate code (Panic A) is present
