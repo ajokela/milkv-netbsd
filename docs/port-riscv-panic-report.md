@@ -287,11 +287,75 @@ already exhibits a severe TX-path misbehavior (~2.45 Mbit/s TX vs
 misbehaver on JH7110. tmpfs-only load still leaves eqos RX DMA active
 (LAN broadcast traffic) and dwcmmc mostly idle.
 
-Next planned experiment (the decisive one): identical stressor with
-eqos0 administratively down (dhcpcd killed, no RX DMA) driven entirely
-over serial console; if it survives, ifconfig eqos0 up mid-run to
-re-introduce the variable and watch for the panic -- on/off causality
-within a single boot.
+## eqos exonerated; physical page double-use proven (2026-07-24, later)
+
+Identical stressor with eqos0 administratively down (dhcpcd killed, no set
+RUNNING flag, RX DMA ring stopped): panicked in ~40 s anyway
+(LIST_* back, uvm_bio.c:538, umap[2226]). So the corrupting writes are
+not eqos DMA either. Every partition so far: 4 CPUs or 1 CPU -- panics;
+NIC up or down -- panics; FFS or tmpfs -- panics.
+
+ddb forensics of this instance produced the decisive evidence. The
+panicking umap's hash.le_prev pointed at hash bucket 1748
+(0xffffffc005b1c6a0). Examining that bucket found not pointers but ASCII:
+
+    x/x 0xffffffc005b1c690,8
+    -> "/latex/europasscv/ic..."  (a pkgsrc pathname)
+
+and the beginning of that kernel page:
+
+    x/x 0xffffffc005b1c000,10
+    -> "@comment $NetBSD: PL..."  (first line of a pkgsrc PLIST file)
+
+The corruption is **page-boundary-delimited**: the previous page ends with
+valid bucket pointers right up to 0xffffffc005b1bfff, the page at
+0xffffffc005b1c000 contains a complete tmpfs file page (PLIST content
+from file offset 0, zero-filled tail), and the next page is clean.
+
+That is: **a physical page backing the kernel's UBC hash-bucket array
+(kmem, allocated once at ubc_init and never freed) is simultaneously in
+use as page 0 of a tmpfs file being extracted.** The file content reached
+it by ordinary CPU copies (tmpfs-to-tmpfs extraction; no DMA in that data
+path), so the fault is in physical page accounting/allocation, not in any
+device driver: uvm_pagealloc handed out a page that kmem already owns.
+The earlier "scattered zero patches" instances are consistent with the
+same mechanism (file pages containing zero runs).
+
+This explains every observation: victim structures are arbitrary
+(whatever kmem object lives on the reused page -- umaps, pmaps (Panic A),
+random pointers (Panic C)); reproduction needs sustained allocation churn
+but not literal memory exhaustion (ddb show uvmexp at panic: 1,072,720
+pages free of 2,025,557 total -- and note total pages match the 8 GB of
+RAM, so there is no gross double-registration of whole RAM); CPU count
+and DMA activity are irrelevant; and qemu (different memory map) never
+reproduces.
+
+Code audit so far (netbsd-11):
+- riscv pte.h PA<->PTE macros: 64-bit clean, no truncation.
+- cpu_kernel_vm_init direct-map gigapage loop: correct for this memory
+  map (slots 385-392 covering PA 0x40000000-0x240000000).
+- RISCV_PA_TO_KVA/KVA_TO_PA: clean for a 128 GiB window.
+- UBC's PMAP_DIRECT fast path: compiled out on riscv (PMAP_DIRECT is
+  never defined; only PMAP_DIRECT_MAP/_UNMAP exist), so file writes go
+  through UBC windows via pmap_kenter_pa(VM_PAGE_TO_PHYS(pg)) -- the bad
+  PA comes from the allocated page itself.
+- Found while auditing (probably unrelated to this bug, but a real API
+  misuse): riscv_machdep.c passes an END address as the SIZE argument:
+      fdt_memory_remove_range(msgbufaddr, msgbufaddr + MSGBUFSIZE);
+  where the API is fdt_memory_remove_range(start, size). Benign by
+  accident because msgbuf is taken from the top of RAM (the over-large
+  range clamps), but it should be msgbufaddr, MSGBUFSIZE.
+
+Working hypothesis: a small number of physical pages are doubly tracked
+from boot (a seam between bootstrap-time reservations and
+uvm_page_physload ranges, or bootstrap memory returned to UVM while still
+referenced), and the first reuse under churn corrupts allocator/kmem
+state, snowballing into the observed variety of panics.
+
+Planned next step: an instrumented kernel that records the physical
+addresses of the ubc_init allocations and KASSERTs in uvm_pagealloc that
+none of them is ever handed out again -- catching the double-allocation
+at the moment it happens, with a backtrace of the guilty path.
 
 Source note: on the netbsd-11 branch, sys/uvm/uvm_bio.c is byte-identical to
 HEAD, and the pmap deferred-activate/segtab_activate code (Panic A) is present
