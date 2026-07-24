@@ -24,7 +24,10 @@ cd "$(dirname "$0")"
 DOWNLOADS=downloads
 OUT="netbsd-mars-$(date +%Y%m%d).img"
 
-NETBSD_BASE_URL="https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/latest/riscv-riscv64/binary/gzimg"
+# NetBSD gzimg source. Defaults to the -current daily (only place JH7110 first
+# landed); override with NETBSD_BASE_URL=... to build from a release, e.g.
+#   NETBSD_BASE_URL=https://cdn.netbsd.org/pub/NetBSD/NetBSD-11.0_RC7/riscv-riscv64/binary/gzimg
+NETBSD_BASE_URL="${NETBSD_BASE_URL:-https://nycdn.netbsd.org/pub/NetBSD-daily/HEAD/latest/riscv-riscv64/binary/gzimg}"
 
 # Debian's u-boot-starfive 2025.01-3.2, pinned via snapshot.debian.org.
 UBOOT_DEB_URL="https://snapshot.debian.org/file/142859e0837736e3246ff7014f686e7e7b33ba75"

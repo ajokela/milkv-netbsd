@@ -177,3 +177,34 @@ Thanks for the RISC-V port; happy to help chase these down.
 
 -- 
 Alex Jokela
+
+## Confirmed on NetBSD 11.0_RC7 (release branch), via tmpfs
+
+The same panic reproduces on the **netbsd-11 release branch** (11.0_RC7,
+GENERIC64, built 2026-07-22), so this is not a -current-only regression. It
+also reproduces through **tmpfs**, not just FFS -- 4 concurrent
+`tar xzf pkgsrc.tar.gz` loops into a tmpfs panicked the box in ~40 s:
+
+    panic: LIST_* back 0xffffffc005ac4340 /usr/src/sys/uvm/uvm_bio.c:538
+    ubc_alloc.constprop.0() at netbsd:ubc_alloc.constprop.0+0x532
+    ubc_uiomove() at netbsd:ubc_uiomove+0x7a
+    tmpfs_write() at netbsd:tmpfs_write+0xa4
+    vn_write() at netbsd:vn_write+0xcc
+    dofilewrite() at netbsd:dofilewrite+0x60
+    syscall() at netbsd:syscall+0xea
+
+So the corruption is in the UBC layer itself (ubc_alloc's umap hash/list
+management), independent of the backing filesystem. ddb examine of the
+corrupted umap showed it **largely zeroed**:
+
+    db> x/x 0xffffffc005ac4340,c
+    ffffffc005ac4340: 3ba20a00 ffffffe1 0 0 0 0 0 0 0 0 0 0
+
+i.e. the umap being LIST_REMOVE'd has a mostly-zeroed body -- consistent with
+a use-after-free / double-unlink of the umap, rather than the wild 0x80 write
+of Panic C. These may be two views of one race in ubc_alloc/ubc_purge under
+concurrent access, or distinct issues.
+
+Source note: on the netbsd-11 branch, sys/uvm/uvm_bio.c is byte-identical to
+HEAD, and the pmap deferred-activate/segtab_activate code (Panic A) is present
+though pmap.c otherwise differs by ~400 lines from HEAD.
