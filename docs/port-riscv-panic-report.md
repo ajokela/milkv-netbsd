@@ -239,11 +239,59 @@ ubc_object writer lock, which is legal), so the path is under heavy
 concurrent load when the tripwire fires, but the frozen lock/list state
 itself does not show a locking violation.
 
-Next diagnostics planned: (1) reproduce with 3 of 4 CPUs offlined via
-cpuctl(8) to partition SMP-coherency causes from single-CPU wild writes;
-(2) on the next ddb entry, probe the extent of the zeroed region around
-umap[3301] (structure-sized vs page-sized) to distinguish a stray
-structure-sized memset from a wrongly recycled/zero-filled page.
+## Single-CPU reproduction and zero-write forensics (2026-07-24)
+
+Reproduced with **hw.ncpuonline=1** (cpuctl offline 1/2/3 on the same
+11.0_RC7 kernel, same 4x tar-into-tmpfs workload): panicked within
+~2 minutes. This eliminates every cross-CPU explanation for the corruption
+itself -- rwlock exclusion failure, inter-hart TLB shootdown races,
+concurrent ubc_alloc -- the corrupting writes happen with one CPU online.
+
+    panic: TAILQ_* forw 0xffffffc005aea260 /usr/src/sys/uvm/uvm_bio.c:554
+    ubc_alloc.constprop.0() at netbsd:ubc_alloc.constprop.0+0x762
+    ubc_uiomove ... tmpfs_write ... (same call path as before)
+
+That is the third distinct queue-integrity check to fire inside ubc_alloc
+(LIST hash 538, LIST list 539, now TAILQ inactive 554) -- the checks are
+tripwires, not suspects.
+
+ddb forensics of this instance (umap array base 0xffffffc005ab9000,
+0x60-byte umaps) mapped the corruption precisely. It is **scattered,
+16-byte-aligned zero patches** over the static umap array, with valid data
+between them:
+
+    0x...a240,0x...a250  umap[2096] inactive+list entries zeroed (latent)
+    0x...a260            umap[2097].uobj zeroed  <- the panicking umap
+    0x...a300,0x...a310  umap[2098] inactive+list entries zeroed
+                         (tqe_prev NULL is what fired TAILQ_* forw)
+    0x...a320            umap[2099].uobj zeroed; its flags field 8 bytes
+                         later still reads UMAP_MAPPING_CACHED (latent
+                         KASSERT violation: uobj NULL + MAPPING_CACHED)
+    0x...b5b0            umap[2148].hash.le_next zeroed (broke 2098's
+                         hash chain)
+
+Cross-checks proving these are foreign writes, not stale-but-legal state:
+umap[2099].inactive.tqe_prev still correctly points at
+&umap[2098].inactive.tqe_next, proving 2098 was legitimately queued when
+its own tqe fields were wiped; and umap[2097]'s freshly-written
+list.le_prev proves ubc_alloc had just stored a real uobj pointer into a
+field that subsequently read NULL.
+
+The signature -- 16-byte-aligned, 16-32 byte zero writes scattered across
+physical memory, under I/O+memory pressure, independent of CPU count --
+looks like **DMA descriptor/status writeback landing at stale or wrong
+physical addresses**. struct eqos_dma_desc (dwc_eqos) is exactly 16 bytes
+and the controller writes status back into ring slots; this board's eqos
+already exhibits a severe TX-path misbehavior (~2.45 Mbit/s TX vs
+388 Mbit/s RX, reported separately), so the driver/attachment is a proven
+misbehaver on JH7110. tmpfs-only load still leaves eqos RX DMA active
+(LAN broadcast traffic) and dwcmmc mostly idle.
+
+Next planned experiment (the decisive one): identical stressor with
+eqos0 administratively down (dhcpcd killed, no RX DMA) driven entirely
+over serial console; if it survives, ifconfig eqos0 up mid-run to
+re-introduce the variable and watch for the panic -- on/off causality
+within a single boot.
 
 Source note: on the netbsd-11 branch, sys/uvm/uvm_bio.c is byte-identical to
 HEAD, and the pmap deferred-activate/segtab_activate code (Panic A) is present
