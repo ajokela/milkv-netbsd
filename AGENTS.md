@@ -120,7 +120,10 @@ to get there.
 
 ## Built and staged, never tested
 
-On the Mac in the session scratchpad (rebuild if gone):
+All of these live on **bosgame** (10.1.1.27), not the Mac — verified present:
+`~/netbsd.fix`, `~/netbsd.4gb`, `~/mars-uboot-2024/u-boot-2024.04/{u-boot.itb,spl/u-boot-spl.bin.normal.out}`.
+The cross-build tree (`~/netbsd-src`, `~/netbsd-tools`) is there too, so
+rebuilding takes about a minute if you need a variant.
 
 - `netbsd.4gb` — HEAD GENERIC64 with `memory_limit` clamped to 0x100000000,
   to test skrll's suggestion that memory above the 4 GB line is implicated.
