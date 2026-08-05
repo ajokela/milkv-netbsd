@@ -18,8 +18,9 @@
 
 set -eu
 
-UBOOT_VER=2025.01
-OPENSBI_VER=1.6
+UBOOT_VER="${UBOOT_VER:-2025.01}"
+OPENSBI_VER="${OPENSBI_VER:-1.6}"
+CLOCK_RAMP="${CLOCK_RAMP:-0}"
 
 SCRIPT=$(cat <<'EOF'
 set -e
@@ -39,12 +40,22 @@ cd u-boot-UBOOT_VER
 make starfive_visionfive2_defconfig >/dev/null
 grep -q 'CONFIG_DEFAULT_FDT_FILE="starfive/jh7110-milkv-mars.dtb"' .config || \
     echo 'CONFIG_DEFAULT_FDT_FILE="starfive/jh7110-milkv-mars.dtb"' >> .config
-# Raise PLL0 500MHz -> 750MHz before boot (park CPU on osc during retune).
-# Mainline SPL leaves the JH7110 at its 500MHz reset clock; NetBSD has no
-# cpufreq driver to raise it. 750MHz is safe at the default CPU voltage;
-# 1.5GHz needs a PMIC voltage bump (future work).
+# Optional PLL0 500MHz -> 750MHz ramp in bootcmd (CLOCK_RAMP=1).
+#
+# DISABLED BY DEFAULT. The ramp parks the CPU on the 24MHz oscillator, rewrites
+# PLL0's fbdiv, then switches back. If PLL0 does not relock, the SoC stops dead
+# the instant bootcmd runs: serial goes silent right after the autoboot
+# countdown, no kernel, no network -- while the power LED and ethernet link
+# lights stay on (the PHY is hardware). That failure was observed on this board
+# and cost a lot of debugging time, so the ramp is now opt-in. Prefer raising
+# the clock at runtime instead of in the boot path.
+if [ "CLOCKRAMPFLAG" = "1" ]; then
 grep -q 'CONFIG_BOOTCOMMAND=' .config && sed -i 's|^CONFIG_BOOTCOMMAND=.*|CONFIG_BOOTCOMMAND="mw.l 13020000 0; mw.l 1303001c 7d; mw.l 13020000 01000000; bootflow scan"|' .config || \
     echo 'CONFIG_BOOTCOMMAND="mw.l 13020000 0; mw.l 1303001c 7d; mw.l 13020000 01000000; bootflow scan"' >> .config
+else
+grep -q 'CONFIG_BOOTCOMMAND=' .config && sed -i 's|^CONFIG_BOOTCOMMAND=.*|CONFIG_BOOTCOMMAND="bootflow scan"|' .config || \
+    echo 'CONFIG_BOOTCOMMAND="bootflow scan"' >> .config
+fi
 make olddefconfig >/dev/null
 export OPENSBI=$HOME/mars-uboot/opensbi-OPENSBI_VER/build/platform/generic/firmware/fw_dynamic.bin
 make CROSS_COMPILE=riscv64-linux-gnu- -j"$(nproc)" >/dev/null
@@ -53,6 +64,7 @@ EOF
 )
 SCRIPT=${SCRIPT//UBOOT_VER/$UBOOT_VER}
 SCRIPT=${SCRIPT//OPENSBI_VER/$OPENSBI_VER}
+SCRIPT=${SCRIPT//CLOCKRAMPFLAG/$CLOCK_RAMP}
 
 mkdir -p firmware
 if [ -n "${BUILDER:-}" ]; then

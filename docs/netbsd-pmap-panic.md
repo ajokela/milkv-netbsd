@@ -129,3 +129,42 @@ the machine safe -- the underlying bug is memory corruption under pressure,
 and a large enough build (this one was compiling `ring`, heavy on RAM) can
 trigger it even in tmpfs. Smaller builds (ballistics-engine v0.4.3) completed
 in tmpfs without incident, so it is pressure/duration dependent.
+
+## Retest on the fix (2026-08-05): assertion gone, corruption remains
+
+Kernel: NetBSD 11.99.7 (GENERIC64) #0: Wed Aug 5 09:51:05 UTC 2026 (-current
+daily), i.e. one week after skrll's pmap.c 1.107 ("Don't use pmap_update in
+pmap_{page_protect,clear_attribute}... instead create a new pmap_shootdown").
+pmap_shootdown is static and inlined, so it is absent from the symbol table;
+presence verified by revision date and source, not by nm.
+
+- The pmap_segtab.c:948 assertion has NOT recurred. 1.107 appears to fix it.
+- The memory corruption is unchanged: panic ~20 s under the standard tmpfs
+  reproducer (32 s on the previous kernel; not a meaningful difference,
+  one sample each and this board now runs at 500 MHz, no clock ramp).
+
+Panic was TAILQ_* forw 0xffffffc005804960 at uvm_bio.c:554 via ubc_alloc <-
+ubc_uiomove <- tmpfs_write.
+
+### Page-aligned damage (clearest evidence so far)
+
+umap array 0xffffffc0057b9000 (0x1000 x 0x60), hash 0xffffffc005819000,
+hashmask 0xfff.
+
+The element in the panic message, umap[3225] @ 0xffffffc005804960, is itself
+intact. QUEUEDEBUG's "forw" check dereferences the successor, umap[2354] @
+0xffffffc0057f02c0, which is entirely zero. Boundaries:
+
+    0xffffffc0057effe0  intact  (valid pointers, flags=2)
+    0xffffffc0057f0000  zero    <- damaged page starts exactly here
+    0xffffffc0057f0ff0  zero    <- and ends exactly here
+    0xffffffc0057f1000  intact  (valid pointers)
+
+Exactly one 4 KiB page of the umap array zeroed, neighbours untouched.
+
+Same class as the earlier instance where a page of the UBC hash bucket array
+held tmpfs file data; only the content written by the other owner differs
+(file bytes then, zeroes now -- consistent with the page being reallocated
+and zero-filled for a new owner).
+
+Follow-up mail drafted in port-riscv-followup-still-corrupting.md.
